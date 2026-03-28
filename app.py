@@ -5,84 +5,83 @@ import yfinance as yf
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-# --- CONFIGURATIE ---
-st.set_page_config(page_title="Yahoo AI Trader Dashboard", layout="wide")
+# --- PAGINA INSTELLINGEN ---
+st.set_page_config(page_title="Free AI Trading Dashboard", layout="wide")
 
-# --- DATA FUNCTIE (YAHOO FINANCE) ---
-def get_data(symbol):
+# --- DATA FUNCTIE (YAHOO) ---
+@st.cache_data(ttl=3600) # Slaat data 1 uur op voor snelheid
+def load_data(ticker):
     try:
-        # We halen 1 jaar aan data op om genoeg historie te hebben voor de EMA 50
-        df = yf.download(symbol, period="1y", interval="1d", progress=False)
-        if df.empty:
-            return pd.DataFrame()
-        
-        # Yahoo data opschonen (Multi-index fix)
-        df.reset_index(inplace=True)
-        return df
+        # Haal 1 jaar data op voor de EMA berekeningen
+        data = yf.download(ticker, period="1y", interval="1d", progress=False)
+        if data.empty:
+            return None
+        # Fix voor Yahoo's nieuwe dataformaat
+        data.columns = [col[0] if isinstance(col, tuple) else col for col in data.columns]
+        data.reset_index(inplace=True)
+        return data
     except Exception as e:
-        st.error(f"Yahoo Finance Fout: {e}")
-        return pd.DataFrame()
+        st.error(f"Fout bij ophalen {ticker}: {e}")
+        return None
 
 # --- STRATEGIE LOGICA ---
-def calc_all_strategies(df):
+def apply_strategies(df):
     df = df.copy()
     
-    # Indicatoren berekenen
+    # Indicatoren via Pandas-TA
     df.ta.ema(length=50, append=True)
     df.ta.rsi(length=14, append=True)
     df.ta.atr(length=10, append=True)
     
-    # Laatste waarden ophalen
-    last_close = float(df['Close'].iloc[-1])
-    last_ema = float(df['EMA_50'].iloc[-1])
-    last_rsi = float(df['RSI_14'].iloc[-1])
+    # Laatste waarden voor het dashboard
+    last_row = df.iloc[-1]
+    close = float(last_row['Close'])
+    ema = float(last_row['EMA_50'])
+    rsi = float(last_row['RSI_14'])
+    atr = float(last_row['ATRr_10'])
     
-    # 1. Trend V2
-    trend_status = "BULLISH" if last_close > last_ema and last_rsi > 50 else "BEARISH"
+    # 1. Trend V2 Status
+    trend = "BULLISH" if close > ema and rsi > 50 else "BEARISH"
     
-    # 2. SST Neural (Momentum simulatie)
-    returns = df['Close'].pct_change(5).iloc[-1]
-    sst_score = max(5, min(98, int(68 + (returns * 160))))
+    # 2. SST Neural (Momentum score)
+    ret = df['Close'].pct_change(5).iloc[-1]
+    sst = max(5, min(98, int(68 + (ret * 160))))
     
-    # 3. UT Bot
-    last_atr = float(df['ATRr_10'].iloc[-1])
-    ut_signal = "BUY ACTIVE" if last_close > (df['High'].iloc[-1] - last_atr) else "SELL / WAIT"
+    # 3. UT Bot MTF
+    ut_status = "BUY ACTIVE" if close > (last_row['High'] - atr) else "SELL / WAIT"
     
     # 4. S/R Levels
-    res_level = float(df['High'].rolling(20).max().iloc[-1])
-    sup_level = float(df['Low'].rolling(20).min().iloc[-1])
+    res = float(df['High'].rolling(20).max().iloc[-1])
+    sup = float(df['Low'].rolling(20).min().iloc[-1])
     
-    return trend_status, sst_score, ut_signal, res_level, sup_level, last_rsi
+    return trend, sst, ut_status, res, sup, rsi, ema
 
-# --- UI DASHBOARD ---
-st.title("📈 Free Yahoo AI Dashboard")
-st.caption("Geen API Key nodig - Live data van Yahoo Finance")
+# --- DASHBOARD UI ---
+st.title("📊 AI Trading Dashboard (Free Data)")
+ticker_input = st.sidebar.text_input("Ticker (bv. AAPL, TSLA, BTC-USD)", "AAPL").upper()
 
-# Sidebar input
-ticker = st.sidebar.text_input("Ticker (bv. AAPL, TSLA, BTC-USD)", "AAPL").upper()
+df = load_data(ticker_input)
 
-df_raw = get_data(ticker)
-
-if not df_raw.empty:
-    trend, sst, ut, res, sup, rsi = calc_all_strategies(df_raw)
+if df is not None:
+    trend, sst, ut, res, sup, rsi, ema = apply_strategies(df)
     
-    # Overall Score
-    total_score = (sst + (100 if trend == "BULLISH" else 0) + (100 if "BUY" in ut else 0)) / 3
+    # Overall Score Berekening
+    score = (sst + (100 if trend == "BULLISH" else 0) + (100 if "BUY" in ut else 0)) / 3
     
-    col_m1, col_m2 = st.columns([1, 2])
-    with col_m1:
-        st.metric("OVERALL SCORE", f"{round(total_score, 1)}%", delta=f"{sst}% AI")
-    with col_m2:
-        st.subheader(f"Analyse voor {ticker}")
-        st.write(f"Systeem status is momenteel: **{trend}**")
+    col_main, col_info = st.columns([1, 2])
+    with col_main:
+        st.metric("TOTAAL SCORE", f"{round(score, 1)}%", delta=f"{sst}% AI Momentum")
+    with col_info:
+        st.subheader(f"Markt Analyse: {ticker_input}")
+        st.write(f"De algemene trend is momenteel **{trend}**.")
 
-    st.markdown("---")
-    
-    # Grid Layout
+    st.divider()
+
+    # De 4 Vakken uit je Pine Script
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.subheader("SST Neural")
-        st.write(f"Score: {sst}%")
+        st.write(f"Score: {sst}")
         st.progress(sst/100)
     with c2:
         st.subheader("Trend V2")
@@ -96,12 +95,14 @@ if not df_raw.empty:
         st.write(f"Target: {round(res, 2)}")
         st.write(f"Floor: {round(sup, 2)}")
 
-    # Grafiek
+    # GRAFIEK
     fig = go.Figure(data=[go.Candlestick(
-        x=df_raw['Date'], open=df_raw['Open'], high=df_raw['High'], low=df_raw['Low'], close=df_raw['Close']
+        x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Prijs"
     )])
-    fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=500)
+    # Voeg EMA 50 toe aan de grafiek
+    fig.add_trace(go.Scatter(x=df['Date'], y=df['EMA_50'], line=dict(color='yellow', width=1), name="EMA 50"))
+    
+    fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=600)
     st.plotly_chart(fig, use_container_width=True)
-
 else:
-    st.warning("Kon geen data vinden voor dit symbool. Gebruik 'BTC-USD' voor Bitcoin of 'AAPL' voor Apple.")
+    st.error("Kon geen data vinden. Check of de ticker klopt (bv. BTC-USD voor Bitcoin).")
