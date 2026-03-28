@@ -12,10 +12,13 @@ st.set_page_config(page_title="AlphaScanner Pro | MTF AI", layout="wide")
 st.markdown("""
     <style>
     .score-container {
-        background-color: #161a25; border-radius: 15px; padding: 25px; text-align: center; margin-bottom: 15px; transition: all 0.5s ease;
+        background-color: #161a25; border-radius: 15px; padding: 30px; text-align: center; margin-bottom: 15px; transition: all 0.5s ease;
     }
     .mtf-box {
         background-color: #1c222d; border: 1px solid #2d3139; border-radius: 10px; padding: 15px; text-align: center;
+    }
+    .status-text {
+        font-size: 22px; font-weight: 700; letter-spacing: 2px; margin-top: 10px;
     }
     .stMetric { background-color: #161a25; border: 1px solid #2d3139; padding: 15px; border-radius: 10px; }
     </style>
@@ -87,17 +90,21 @@ if df_1d is not None and len(df_1d) > 30:
     score_1h, bull_1h = calc_mtf_score(df_1h)
     score_1d, bull_1d = calc_mtf_score(df_1d)
 
-    # --- TOP DISPLAY ---
-    border = "4px solid #00FFCC; box-shadow: 0px 0px 15px #00FFCC;" if score_1d >= 80 else "2px solid #2d3139;"
+    # --- TOP DISPLAY: CONVICTION + TREND ---
+    border = "5px solid #00FFCC; box-shadow: 0px 0px 20px #00FFCC;" if score_1d >= 80 else "2px solid #2d3139;"
     color_d = "#00FFCC" if score_1d >= 80 else "#FFA500" if score_1d >= 50 else "#FF4B4B"
+    trend_text = "BULLISH PHASE" if bull_1d else "BEARISH PHASE"
+    trend_color = "#00FFCC" if bull_1d else "#FF4B4B"
 
     st.markdown(f"""
         <div class="score-container" style="border: {border}">
             <p style="font-size: 14px; color: #808495; text-transform: uppercase; letter-spacing: 3px; margin: 0;">Daily AI Conviction - {symbol}</p>
-            <p style="font-size: 60px; font-weight: 900; margin: 0; color: {color_d};">{score_1d}%</p>
+            <p style="font-size: 70px; font-weight: 900; margin: 0; color: {color_d};">{score_1d}%</p>
+            <p class="status-text" style="color: {trend_color};">{trend_text}</p>
         </div>
         """, unsafe_allow_html=True)
 
+    # --- MTF STATUS BAR ---
     c1, c2 = st.columns(2)
     with c1:
         c_15 = "#00FFCC" if score_15m >= 70 else "#FF4B4B"
@@ -106,7 +113,9 @@ if df_1d is not None and len(df_1d) > 30:
         c_1h = "#00FFCC" if score_1h >= 70 else "#FF4B4B"
         st.markdown(f'<div class="mtf-box"><small style="color:#808495">1H SCORE</small><h3 style="color:{c_1h};margin:0">{score_1h}% {"🟢" if bull_1h else "🔴"}</h3></div>', unsafe_allow_html=True)
 
-    # --- DAILY CHART CALCULATIONS ---
+    st.divider()
+
+    # --- DAILY CHART ---
     df_1d['EMA_50'] = df_1d['Close'].ewm(span=50, adjust=False).mean()
     df_1d['SMA_20'] = df_1d['Close'].rolling(window=20).mean()
     df_1d['ATR'] = (df_1d['High'] - df_1d['Low']).rolling(10).mean()
@@ -114,7 +123,7 @@ if df_1d is not None and len(df_1d) > 30:
     df_1d['Entry'] = df_1d['Signal'].diff()
 
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-    fig.add_trace(go.Candlestick(x=df_1d['Date'], open=df_1d['Open'], high=df_1d['High'], low=df_1d['Low'], close=df_1d['Close'], name="Daily"), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=df_1d['Date'], open=df_1d['Open'], high=df_1d['High'], low=df_1d['Low'], close=df_1d['Close'], name="Price"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_1d['Date'], y=df_1d['EMA_50'], line=dict(color='yellow'), name="EMA 50"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_1d['Date'], y=df_1d['SMA_20'], line=dict(color='#00BFFF'), name="SMA 20"), row=1, col=1)
     
@@ -127,18 +136,17 @@ if df_1d is not None and len(df_1d) > 30:
 
     # --- PLAN ---
     last_p = float(df_1d['Close'].iloc[-1])
-    atr_v = float(df_1d['ATR'].iloc[-1])
-    sl = last_p - (atr_v * 2)
+    sl = last_p - (float(df_1d['ATR'].iloc[-1]) * 2)
     qty = (capital * (risk_pct/100)) / (last_p - sl) if last_p > sl else 0
 
-    st.subheader("📝 Trade Plan")
+    st.subheader("📝 Live Execution Plan")
     p1, p2, p3 = st.columns(3)
-    p1.metric("Trend", "BULLISH" if bull_1d else "BEARISH", delta="CONFIRMED" if bull_1d else "WEAK", delta_color="green" if bull_1d else "inverse")
-    p2.success(f"Quantity: {int(qty)} units")
-    p3.warning(f"Stop Loss: ${round(sl, 2)}")
+    p1.metric("Current Price", f"${round(last_p, 2)}")
+    p2.success(f"Suggested Quantity: {int(qty)} units")
+    p3.warning(f"Protective Stop: ${round(sl, 2)}")
 
     if score_1d >= 80:
         play_alert()
 
 else:
-    st.error("No data found. Check ticker.")
+    st.error("Select a ticker to load the Command Center.")
