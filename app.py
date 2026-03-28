@@ -35,7 +35,7 @@ def get_data(ticker):
 
 # --- SIDEBAR: WATCHLIST MANAGER ---
 with st.sidebar:
-    st.title("🛡️ Terminal")
+    st.title("🛡️ AlphaScanner Pro")
     
     # 1. Add Ticker to Watchlist
     st.subheader("📋 Watchlist Manager")
@@ -67,6 +67,10 @@ df = get_data(symbol)
 
 if df is not None and len(df) > 50:
     # --- CALCULATIONS ---
+    # Create copy to avoid SettingWithCopy warnings
+    df = df.copy()
+
+    # EMAs
     df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
     
@@ -76,22 +80,28 @@ if df is not None and len(df) > 50:
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     df['RSI'] = 100 - (100 / (1 + (gain / loss)))
     
-    # ATR for Risk/UT Bot
+    # ATR for Trailing Stop logic
     df['ATR'] = (df['High'] - df['Low']).rolling(10).mean()
     
-    # Metrics for Logic
+    # metrics for Logic
     last = df.iloc[-1]
     prev = df.iloc[-2]
     last_price = float(last['Close'])
     rsi_val = float(last['RSI'])
     
-    # Strategy Logic
+    # --- STRATEGY LOGIC ---
     trend_bullish = last_price > last['EMA_50'] and rsi_val > 50
     ret_5d = df['Close'].pct_change(5).iloc[-1]
     sst_score = max(5, min(98, int(68 + (ret_5d * 160))))
-    
     total_score = (sst_score + (100 if trend_bullish else 0)) / 2
-    ut_signal = "BUY" if last_price > (prev['High'] - last['ATR']) else "SELL / WAIT"
+    
+    # UT Bot Signal (Trailing Stop)
+    df['UT_Stop'] = df['High'].rolling(1).max().shift() - (1.0 * df['ATR'])
+    # Vectorized check for Buy/Sell condition
+    df['Signal'] = np.where(df['Close'] > df['UT_Stop'], 'BUY', 'SELL')
+    
+    # Current Signal for Metric display
+    current_signal = df['Signal'].iloc[-1]
 
     # --- DASHBOARD DISPLAY ---
     st.header(f"📊 Analysis: {symbol}")
@@ -101,22 +111,42 @@ if df is not None and len(df) > 50:
     m1.metric("Conviction Score", f"{round(total_score, 1)}%", delta=f"{sst_score}% AI")
     m2.metric("Market Price", f"${round(last_price, 2)}")
     m3.metric("Trend Phase", "BULLISH" if trend_bullish else "BEARISH")
-    m4.metric("UT Bot Signal", ut_signal)
+    m4.metric("UT Bot Signal", current_signal)
 
     # Alerts
     if total_score >= 80:
         st.toast(f"🚀 HIGH CONVICTION DETECTED: {symbol}", icon="🔥")
         play_alert()
 
-    # --- PROFESSIONAL CHART ---
+    # --- PROFESSIONAL CHART with Arrows ---
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
     
-    # Price & EMAs
+    # 1. Price Candlesticks
     fig.add_trace(go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"), row=1, col=1)
+    
+    # 2. Add EMA lines
     fig.add_trace(go.Scatter(x=df['Date'], y=df['EMA_50'], line=dict(color='yellow', width=1), name="EMA 50"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df['Date'], y=df['EMA_20'], line=dict(color='orange', width=1), name="EMA 20"), row=1, col=1)
     
-    # RSI
+    # 3. Add Buy/Sell Arrows (Overlays)
+    # We find where the signal CHANGES from previous day
+    df['Entry_Exit'] = df['Signal'].diff()
+    
+    # Filter for Buy Signals
+    buys = df[df['Entry_Exit'] == 'BUY']
+    if not buys.empty:
+        fig.add_trace(go.Scatter(x=buys['Date'], y=buys['Low'] * 0.99, # Slightly below low
+                                 mode='markers', marker=dict(symbol='triangle-up', size=15, color='lime'),
+                                 name='Buy Entry'), row=1, col=1)
+        
+    # Filter for Sell Signals
+    sells = df[df['Entry_Exit'] == 'SELL']
+    if not sells.empty:
+        fig.add_trace(go.Scatter(x=sells['Date'], y=sells['High'] * 1.01, # Slightly above high
+                                 mode='markers', marker=dict(symbol='triangle-down', size=15, color='red'),
+                                 name='Sell Exit'), row=1, col=1)
+
+    # 4. RSI subplot
     fig.add_trace(go.Scatter(x=df['Date'], y=df['RSI'], line=dict(color='#00FFCC', width=1.5), name="RSI"), row=2, col=1)
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
@@ -130,7 +160,9 @@ if df is not None and len(df) > 50:
     
     stop_loss = last_price - (last['ATR'] * 2)
     risk_amt = capital * (risk_pct / 100)
-    qty = risk_amt / (last_price - stop_loss) if last_price > stop_loss else 0
+    # Fix for division by zero
+    diff = last_price - stop_loss
+    qty = risk_amt / diff if diff > 0 else 0
     
     with tp_col1:
         st.write(f"**Position Sizing:**")
@@ -144,4 +176,4 @@ if df is not None and len(df) > 50:
         st.write(f"• EMA 50: ${round(last['EMA_50'], 2)}")
 
 else:
-    st.warning("Please add or select a valid ticker from your watchlist to begin analysis.")
+    st.warning("Please add or select a valid ticker from your watchlist in the sidebar to begin analysis.")
