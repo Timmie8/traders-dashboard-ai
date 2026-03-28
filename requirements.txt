@@ -1,5 +1,5 @@
 streamlit
 pandas
-requests
-plotly
 pandas-ta @ git+https://github.com/twopirllc/pandas-ta.git@development
+plotly
+yfinance
