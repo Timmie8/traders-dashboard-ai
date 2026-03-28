@@ -1,5 +1,5 @@
-yfinance
-pandas
-pandas-ta @ git+https://github.com/twopirllc/pandas-ta.git@development
-plotly
 streamlit
+pandas==2.2.2
+yfinance
+plotly
+pandas-ta @ git+https://github.com/twopirllc/pandas-ta.git@development
