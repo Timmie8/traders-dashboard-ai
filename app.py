@@ -7,7 +7,8 @@ from datetime import datetime, timedelta
 
 # --- CONFIGURATIE ---
 st.set_page_config(page_title="Crypto/Stock AI Dashboard", layout="wide")
-FINNHUB_KEY = "JOUW_FINNHUB_API_KEY_HIER" # Plak hier je sleutel
+# Haal de key op uit de Streamlit Secrets
+FINNHUB_KEY = st.secrets["FINNHUB_KEY"]
 
 # --- FUNCTIES VOOR DATA ---
 def get_finnhub_data(symbol, resolution='D', days=100):
