@@ -1,5 +1,6 @@
 streamlit
 pandas
-pandas_ta
+pandas-ta
 requests
 plotly
+finnhub-python
