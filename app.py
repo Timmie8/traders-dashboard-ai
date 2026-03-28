@@ -31,7 +31,7 @@ def get_data(ticker):
         return df
     except: return None
 
-# --- SIDEBAR: WATCHLIST & AUTO-FOCUS ---
+# --- SESSION STATE ---
 if 'watchlist' not in st.session_state:
     st.session_state.watchlist = ["AAPL", "NVDA", "BTC-USD", "TSLA"]
 if 'active_ticker' not in st.session_state:
@@ -56,11 +56,6 @@ with st.sidebar:
         st.session_state.active_ticker = symbol
         st.rerun()
 
-    if st.button("Clear Watchlist"):
-        st.session_state.watchlist = ["AAPL"]
-        st.session_state.active_ticker = "AAPL"
-        st.rerun()
-
     st.divider()
     st.subheader("🧮 Settings")
     capital = st.number_input("Balance ($)", value=10000)
@@ -72,70 +67,82 @@ df = get_data(st.session_state.active_ticker)
 if df is not None and len(df) > 50:
     df = df.copy()
 
-    # Indicators
+    # 1. Technical Indicators
     df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
+    df['ATR'] = (df['High'] - df['Low']).rolling(10).mean()
     
-    # RSI & ATR
+    # 2. RSI Calculation
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     df['RSI'] = 100 - (100 / (1 + (gain / loss)))
-    df['ATR'] = (df['High'] - df['Low']).rolling(10).mean()
+
+    # 3. SST Conviction Logic (Vectorized for History)
+    df['Ret_5d'] = df['Close'].pct_change(5)
+    df['SST_Raw'] = (68 + (df['Ret_5d'] * 160)).clip(5, 98)
     
-    # Signals
-    last_price = float(df['Close'].iloc[-1])
-    trend_bullish = last_price > df['EMA_50'].iloc[-1] and df['RSI'].iloc[-1] > 50
-    ret_5d = df['Close'].pct_change(5).iloc[-1]
-    sst_score = max(5, min(98, int(68 + (ret_5d * 160))))
-    total_score = (sst_score + (100 if trend_bullish else 0)) / 2
-    
-    # UT Bot Signal
+    # Trend Bonus (100 if Close > EMA50 AND RSI > 50, else 0)
+    df['Trend_Bonus'] = np.where((df['Close'] > df['EMA_50']) & (df['RSI'] > 50), 100, 0)
+    df['Conviction_Score'] = (df['SST_Raw'] + df['Trend_Bonus']) / 2
+
+    # 4. Entry Signals
     df['UT_Stop'] = df['High'].rolling(1).max().shift() - (1.0 * df['ATR'])
     df['Signal_Num'] = np.where(df['Close'] > df['UT_Stop'], 1, 0)
     df['Entry'] = df['Signal_Num'].diff()
 
-    # --- DASHBOARD ---
+    # --- DASHBOARD METRICS ---
+    last = df.iloc[-1]
     st.header(f"📊 Analysis: {st.session_state.active_ticker}")
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Conviction", f"{round(total_score, 1)}%", delta=f"{sst_score}% AI")
-    m2.metric("Price", f"${round(last_price, 2)}")
-    m3.metric("Trend", "BULLISH" if trend_bullish else "BEARISH")
-    m4.metric("UT Signal", "BUY" if df['Signal_Num'].iloc[-1] == 1 else "SELL")
+    m1.metric("Conviction", f"{round(last['Conviction_Score'], 1)}%", delta=f"{round(last['SST_Raw'], 1)}% SST")
+    m2.metric("Price", f"${round(last['Close'], 2)}")
+    m3.metric("Trend", "BULLISH" if last['Trend_Bonus'] == 100 else "BEARISH")
+    m4.metric("UT Signal", "BUY" if last['Signal_Num'] == 1 else "SELL")
 
-    if total_score >= 80:
+    if last['Conviction_Score'] >= 80:
         st.toast(f"🚀 HIGH CONVICTION: {st.session_state.active_ticker}", icon="🔥")
         play_alert()
 
-    # --- CHART ---
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+    # --- PRO CHARTING (3 ROWS) ---
+    fig = make_subplots(
+        rows=3, cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.03, 
+        row_heights=[0.5, 0.25, 0.25],
+        subplot_titles=("Price Action", "Relative Strength (RSI)", "AI Conviction History")
+    )
     
-    # Price
+    # ROW 1: Price
     fig.add_trace(go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['Date'], y=df['EMA_50'], line=dict(color='yellow', width=1), name="EMA 50"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['Date'], y=df['SMA_20'], line=dict(color='#00BFFF', width=1), name="SMA 20"), row=1, col=1)
     
-    # Moving Averages
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['EMA_50'], line=dict(color='yellow', width=1.5), name="EMA 50"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['SMA_20'], line=dict(color='#00BFFF', width=1.5), name="SMA 20"), row=1, col=1)
-    
-    # ONLY BUY ARROWS
+    # Buy Arrows
     buys = df[df['Entry'] == 1]
     if not buys.empty:
         fig.add_trace(go.Scatter(x=buys['Date'], y=buys['Low'] * 0.98, mode='markers', 
-                                 marker=dict(symbol='triangle-up', size=18, color='lime'), name='BUY SIGNAL'), row=1, col=1)
+                                 marker=dict(symbol='triangle-up', size=15, color='lime'), name='BUY ENTRY'), row=1, col=1)
 
-    # RSI
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['RSI'], line=dict(color='#00FFCC'), name="RSI"), row=2, col=1)
+    # ROW 2: RSI
+    fig.add_trace(go.Scatter(x=df['Date'], y=df['RSI'], line=dict(color='#00FFCC', width=1.5), name="RSI"), row=2, col=1)
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
 
-    fig.update_layout(template="plotly_dark", height=700, xaxis_rangeslider_visible=False, margin=dict(l=0,r=0,t=0,b=0))
+    # ROW 3: Conviction Score History
+    # We use a filled area chart to show strength
+    fig.add_trace(go.Scatter(x=df['Date'], y=df['Conviction_Score'], fill='tozeroy', 
+                             line=dict(color='orange', width=2), name="AI Score"), row=3, col=1)
+    fig.add_hline(y=80, line_dash="dot", line_color="gold", row=3, col=1)
+
+    fig.update_layout(template="plotly_dark", height=900, xaxis_rangeslider_visible=False, margin=dict(l=0,r=0,t=20,b=0))
     st.plotly_chart(fig, use_container_width=True)
 
     # --- POSITION SIZING ---
     st.subheader("📝 Position Plan")
-    stop_loss = last_price - (df['ATR'].iloc[-1] * 2)
+    stop_loss = float(last['Close'] - (last['ATR'] * 2))
     risk_amt = capital * (risk_pct / 100)
-    diff_val = last_price - stop_loss
+    diff_val = float(last['Close']) - stop_loss
     qty = risk_amt / diff_val if diff_val > 0 else 0
     
     c1, c2 = st.columns(2)
@@ -143,4 +150,4 @@ if df is not None and len(df) > 50:
     c2.warning(f"Stop Loss Level: **${round(stop_loss, 2)}**")
 
 else:
-    st.warning("Data loading... please check ticker symbol.")
+    st.warning("Awaiting Ticker Selection...")
