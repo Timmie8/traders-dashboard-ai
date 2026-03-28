@@ -4,18 +4,23 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
+import base64
 
-# --- CONFIGURATIE ---
-st.set_page_config(page_title="PRO AI Quant Dashboard", layout="wide", initial_sidebar_state="expanded")
+# --- CONFIGURATION ---
+st.set_page_config(page_title="AlphaScanner Pro | AI Quant", layout="wide")
 
-# Custom CSS voor een 'Bloomberg' look
-st.markdown("""
-    <style>
-    .main { background-color: #0e1117; }
-    div[data-metric-label-weight="700"] > label { color: #808495; }
-    .stMetric { background-color: #161a25; border: 1px solid #2d3139; padding: 15px; border-radius: 10px; }
-    </style>
-    """, unsafe_allow_html=True)
+# Function to play alert sound
+def play_alert():
+    # A short, professional 'ping' sound
+    sound_url = "https://www.soundjay.com/buttons/sounds/button-3.mp3"
+    st.components.v1.html(
+        f"""
+        <audio autoplay>
+            <source src="{sound_url}" type="audio/mpeg">
+        </audio>
+        """,
+        height=0,
+    )
 
 @st.cache_data(ttl=300)
 def get_data(ticker):
@@ -27,84 +32,103 @@ def get_data(ticker):
         return df
     except: return None
 
-# --- SIDEBAR & INPUT ---
-with st.sidebar:
-    st.header("🎯 Asset Selectie")
-    symbol = st.text_input("Ticker Symbool", "AAPL").upper()
-    st.divider()
-    st.info("Dit dashboard combineert SST Neural Momentum, Trend V2 (EMA/RSI) en UT Bot Trailing Signals.")
+def calculate_metrics(df):
+    if df is None or len(df) < 50: return 0, "N/A", 0
+    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rsi = 100 - (100 / (1 + (gain / loss))).iloc[-1]
+    
+    last_close = float(df['Close'].iloc[-1])
+    ema_50 = float(df['EMA_50'].iloc[-1])
+    
+    trend = "BULLISH" if last_close > ema_50 and rsi > 50 else "BEARISH"
+    ret_5d = df['Close'].pct_change(5).iloc[-1]
+    sst = max(5, min(98, int(68 + (ret_5d * 160))))
+    
+    score = (sst + (100 if trend == "BULLISH" else 0)) / 2
+    return round(score, 1), trend, round(rsi, 1)
 
+# --- UI HEADER ---
+st.title("🛡️ AlphaScanner Pro")
+st.caption("AI-Powered Multi-Strategy Trading Terminal")
+
+# --- MARKET SCANNER ---
+st.subheader("🔍 Market Sentinel Scanner")
+watch_list = ["AAPL", "NVDA", "TSLA", "BTC-USD", "ETH-USD", "MSFT", "AMD"]
+scan_cols = st.columns(len(watch_list))
+
+high_score_detected = False
+
+for i, t in enumerate(watch_list):
+    data = get_data(t)
+    score, trend, rsi_val = calculate_metrics(data)
+    
+    with scan_cols[i]:
+        st.metric(t, f"{score}%", delta=trend, delta_color="normal")
+        if score >= 80:
+            st.toast(f"🔥 HIGH CONVICTION: {t}", icon="🚀")
+            high_score_detected = True
+
+# Trigger audio if any watched asset is booming
+if high_score_detected:
+    play_alert()
+
+st.divider()
+
+# --- SIDEBAR SETTINGS ---
+with st.sidebar:
+    st.header("⚙️ Terminal Settings")
+    symbol = st.text_input("Active Ticker", "AAPL").upper()
+    st.divider()
+    st.subheader("🧮 Position Sizing")
+    capital = st.number_input("Account Balance ($)", value=10000)
+    risk_pct = st.slider("Risk per Trade (%)", 0.5, 5.0, 1.0)
+    
 df = get_data(symbol)
 
 if df is not None and len(df) > 50:
-    # --- CALCULATIONS ---
+    # Technicals
     df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
-    
-    # RSI
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+    df['ATR'] = (df['High'] - df['Low']).rolling(10).mean()
     
-    # ATR & UT Bot Logica
-    high_low = df['High'] - df['Low']
-    high_close = np.abs(df['High'] - df['Close'].shift())
-    low_close = np.abs(df['Low'] - df['Close'].shift())
-    df['ATR'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(10).mean()
+    # Main Analysis
+    score, trend, rsi_now = calculate_metrics(df)
+    last_price = float(df['Close'].iloc[-1])
     
-    # Signalen
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-    
-    trend_bullish = last['Close'] > last['EMA_50'] and last['RSI'] > 50
-    ut_buy = last['Close'] > (prev['High'] - (1.0 * last['ATR']))
-    sst_val = max(5, min(98, int(68 + (df['Close'].pct_change(5).iloc[-1] * 160))))
-    
-    total_score = (sst_val + (100 if trend_bullish else 0) + (100 if ut_buy else 0)) / 3
+    # Dashboard Metrics
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Conviction Score", f"{score}%")
+    m2.metric("Market Price", f"${round(last_price, 2)}")
+    m3.metric("Trend Phase", trend)
+    m4.metric("RSI (14)", rsi_now)
 
-    # --- HEADER METRICS ---
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Overall Score", f"{round(total_score, 1)}%", delta=f"{sst_val}% AI", delta_color="normal")
-    c2.metric("Laatste Prijs", f"${round(last['Close'], 2)}", f"{round(((last['Close']/prev['Close'])-1)*100, 2)}%")
-    c3.metric("Trend Status", "BULLISH" if trend_bullish else "BEARISH", delta="EMA50 Cross" if trend_bullish else "-")
-    c4.metric("UT Bot", "BUY" if ut_buy else "SELL", delta="Active" if ut_buy else "Wait")
-
-    st.divider()
-
-    # --- MAIN CHART (Candles + Indicators) ---
+    # Professional Charting
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-
-    # Candlestick
-    fig.add_trace(go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Prijs"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['EMA_50'], line=dict(color='#FFD700', width=1.5), name="EMA 50"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['EMA_20'], line=dict(color='#00BFFF', width=1), name="EMA 20"), row=1, col=1)
-
-    # RSI
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['RSI'], line=dict(color='#9467bd', width=1.5), name="RSI"), row=2, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-
-    fig.update_layout(template="plotly_dark", height=700, xaxis_rangeslider_visible=False, 
-                      margin=dict(l=0, r=0, t=0, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    fig.add_trace(go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name=symbol), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['Date'], y=df['EMA_50'], line=dict(color='yellow', width=1), name="EMA 50"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['Date'], y=df['EMA_20'], line=dict(color='orange', width=1), name="EMA 20"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['Date'], y=df['RSI'], line=dict(color='#00FFCC'), name="RSI"), row=2, col=1)
     
+    fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False, margin=dict(l=0,r=0,t=0,b=0))
     st.plotly_chart(fig, use_container_width=True)
-
-    # --- RISK MANAGEMENT CALCULATOR ---
-    st.sidebar.divider()
-    st.sidebar.subheader("🧮 Position Sizer")
-    capital = st.sidebar.number_input("Account Grootte ($)", value=10000)
-    risk_pct = st.sidebar.slider("Risk per trade (%)", 0.5, 5.0, 1.0)
-    stop_loss = st.sidebar.number_input("Stop Loss Prijs ($)", value=float(last['Close'] * 0.95))
     
+    # Position Calculation
+    stop_loss = last_price - (df['ATR'].iloc[-1] * 2)
     risk_amount = capital * (risk_pct / 100)
-    diff = float(last['Close']) - stop_loss
-    if diff > 0:
-        shares = risk_amount / diff
-        st.sidebar.success(f"Koop: **{int(shares)}** aandelen")
-        st.sidebar.caption(f"Totaal risico: ${round(risk_amount, 2)}")
-    else:
-        st.sidebar.error("Stop loss moet lager zijn dan de prijs.")
+    position_size = risk_amount / (last_price - stop_loss)
+    
+    with st.sidebar:
+        st.write(f"---")
+        st.write(f"**Trade Plan:**")
+        st.write(f"Suggested SL: ${round(stop_loss, 2)}")
+        st.success(f"Quantity: {int(position_size)} units")
 
 else:
-    st.warning("⚠️ Geen data gevonden. Controleer de ticker (bijv. AAPL of BTC-USD).")
+    st.error("Invalid Ticker or Data missing.")
